@@ -385,14 +385,16 @@ def main():
     FPS = 50
     # ip = "192.168.1.123"  # This is for zmq connection
     ip = "localhost"  # This is for local/wired connection
-    robot_name = "my_xlerobot_pc"
+    robot_name = "xlerobot_teleop_keyboard"
 
     # For zmq connection
     # robot_config = XLerobotClientConfig(remote_ip=ip, id=robot_name)
     # robot = XLerobotClient(robot_config)    
 
     # For local/wired connection
-    robot_config = XLerobotConfig()
+    port1: str = "/dev/tty.usbmodem5AB01576701"  # port to connect to the bus (so101 + head camera)
+    port2: str = "/dev/tty.usbmodem5AB01575731"  # port to connect to the bus (same as lekiwi setup)
+    robot_config = XLerobotConfig(id=robot_name, port1=port1, port2=port2)
     robot = XLerobot(robot_config)
     
     try:
@@ -404,7 +406,7 @@ def main():
         print(robot)
         return
         
-    init_rerun(session_name="xlerobot_teleop_v2")
+    init_rerun(session_name=robot_name)
 
     #Init the keyboard instance
     keyboard_config = KeyboardTeleopConfig()
