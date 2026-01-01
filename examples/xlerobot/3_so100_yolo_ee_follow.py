@@ -453,7 +453,8 @@ def main():
         
         # Get port
         port = input("Please enter SO100 robot USB port (e.g.: /dev/ttyACM0): ").strip()
-        
+        robot_name = "so100_yolo_ee_follower"
+
         # If Enter is pressed directly, use default port
         if not port:
             port = "/dev/ttyACM0"
@@ -462,7 +463,7 @@ def main():
             print(f"Connecting to port: {port}")
         
         # Configure robot
-        robot_config = SO100FollowerConfig(port=port)
+        robot_config = SO100FollowerConfig(id=robot_name, port=port)
         robot = SO100Follower(robot_config)
         
         # Configure keyboard
