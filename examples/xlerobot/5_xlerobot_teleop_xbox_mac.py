@@ -26,15 +26,6 @@ AXIS_RY: Final = 3   # right stick Y
 AXIS_LT: Final = 4   # left trigger
 AXIS_RT: Final = 5   # right trigger
 
-AXIS_NAMES: Final[Dict[int, str]] = {
-    AXIS_LX: "Left Stick X",
-    AXIS_LY: "Left Stick Y",
-    AXIS_RX: "Right Stick X",
-    AXIS_RY: "Right Stick Y",
-    AXIS_LT: "Left Trigger",
-    AXIS_RT: "Right Trigger",
-}
-
 BTN_A: Final         = 0
 BTN_B: Final         = 1
 BTN_X: Final         = 2
@@ -75,21 +66,6 @@ BUTTON_NAMES: Final[Dict[int, str]] = {
 }
 
 # Keymaps (semantic action: controller mapping) - Intuitive human control
-LEFT_KEYMAP = {
-    # Left stick controls left arm XY (when not pressed)
-    'x+': 'left_stick_up', 'x-': 'left_stick_down',
-    'y+': 'left_stick_right', 'y-': 'left_stick_left',
-    # Left stick pressed controls left arm shoulder_pan
-    'shoulder_pan+': 'left_stick_pressed_right', 'shoulder_pan-': 'left_stick_pressed_left',
-    # LB pressed controls left arm pitch and wrist_roll
-    'pitch+': 'lb_up', 'pitch-': 'lb_down',
-    'wrist_roll+': 'lb_right', 'wrist_roll-': 'lb_left',
-    # Left trigger controls left gripper
-    'gripper+': 'left_trigger',
-    # Head motors
-    "head_motor_1+": 'x', "head_motor_1-": 'b',
-    "head_motor_2+": 'a', "head_motor_2-": 'y',
-}
 RIGHT_KEYMAP = {
     # Right stick controls right arm XY (when not pressed)
     'x+': 'right_stick_up', 'x-': 'right_stick_down',
@@ -112,14 +88,6 @@ BASE_KEYMAP = {
 # Global reset key for all components
 RESET_KEY = 'back'
 
-LEFT_JOINT_MAP = {
-    "shoulder_pan": "left_arm_shoulder_pan",
-    "shoulder_lift": "left_arm_shoulder_lift",
-    "elbow_flex": "left_arm_elbow_flex",
-    "wrist_flex": "left_arm_wrist_flex",
-    "wrist_roll": "left_arm_wrist_roll",
-    "gripper": "left_arm_gripper",
-}
 RIGHT_JOINT_MAP = {
     "shoulder_pan": "right_arm_shoulder_pan",
     "shoulder_lift": "right_arm_shoulder_lift",
@@ -128,51 +96,6 @@ RIGHT_JOINT_MAP = {
     "wrist_roll": "right_arm_wrist_roll",
     "gripper": "right_arm_gripper",
 }
-
-HEAD_MOTOR_MAP = {
-    "head_motor_1": "head_motor_1",
-    "head_motor_2": "head_motor_2",
-}
-
-class SimpleHeadControl:
-    def __init__(self, initial_obs, kp=1):
-        self.kp = kp
-        self.degree_step = 1
-        # Initialize head motor positions
-        self.target_positions = {
-            "head_motor_1": initial_obs.get("head_motor_1.pos", 0.0),
-            "head_motor_2": initial_obs.get("head_motor_2.pos", 0.0),
-        }
-        self.zero_pos = {"head_motor_1": 0.0, "head_motor_2": 0.0}
-
-    def move_to_zero_position(self, robot):
-        self.target_positions = self.zero_pos.copy()
-        action = self.p_control_action(robot)
-        robot.send_action(action)
-
-    def handle_keys(self, key_state):
-        if key_state.get('head_motor_1+'):
-            self.target_positions["head_motor_1"] += self.degree_step
-            print(f"[HEAD] head_motor_1: {self.target_positions['head_motor_1']}")
-        if key_state.get('head_motor_1-'):
-            self.target_positions["head_motor_1"] -= self.degree_step
-            print(f"[HEAD] head_motor_1: {self.target_positions['head_motor_1']}")
-        if key_state.get('head_motor_2+'):
-            self.target_positions["head_motor_2"] += self.degree_step
-            print(f"[HEAD] head_motor_2: {self.target_positions['head_motor_2']}")
-        if key_state.get('head_motor_2-'):
-            self.target_positions["head_motor_2"] -= self.degree_step
-            print(f"[HEAD] head_motor_2: {self.target_positions['head_motor_2']}")
-
-    def p_control_action(self, robot):
-        obs = robot.get_observation()
-        action = {}
-        for motor in self.target_positions:
-            current = obs.get(f"{HEAD_MOTOR_MAP[motor]}.pos", 0.0)
-            error = self.target_positions[motor] - current
-            control = self.kp * error
-            action[f"{HEAD_MOTOR_MAP[motor]}.pos"] = current + control
-        return action
 
 class SimpleTeleopArm:
     def __init__(self, kinematics, joint_map, initial_obs, prefix="left", kp=1):
@@ -322,9 +245,7 @@ def get_xbox_key_state(joystick, keymap):
     # Map controller state to semantic actions
     state = {}
     for action, control in keymap.items():
-        if control == 'left_trigger':
-            state[action] = axes[AXIS_LT] > 0.5 if len(axes) > 2 else False
-        elif control == 'right_trigger':
+        if control == 'right_trigger':
             state[action] = axes[AXIS_RT] > 0.5 if len(axes) > 5 else False
         elif control == 'a':
             state[action] = bool(buttons[BTN_A])
@@ -344,15 +265,6 @@ def get_xbox_key_state(joystick, keymap):
             state[action] = bool(buttons[BTN_DPAD_LEFT])
         elif control == 'dpad_right':
             state[action] = bool(buttons[BTN_DPAD_RIGHT])
-        # Left stick controls (when not pressed)
-        elif control == 'left_stick_up':
-            state[action] = (not left_stick_pressed) and (not lb_pressed) and (axes[BTN_A] < -0.5) if len(axes) > 1 else False
-        elif control == 'left_stick_down':
-            state[action] = (not left_stick_pressed) and (not lb_pressed) and (axes[BTN_A] > 0.5) if len(axes) > 1 else False
-        elif control == 'left_stick_left':
-            state[action] = (not left_stick_pressed) and (not lb_pressed) and (axes[BTN_B] < -0.5) if len(axes) > 0 else False
-        elif control == 'left_stick_right':
-            state[action] = (not left_stick_pressed) and (not lb_pressed) and (axes[BTN_B] > 0.5) if len(axes) > 0 else False
         # Right stick controls (when not pressed) - Fixed axis mapping
         elif control == 'right_stick_up': # x+
             state[action] = (not right_stick_pressed) and (not rb_pressed) and (axes[BTN_X] < -0.5) if len(axes) > 4 else False
@@ -362,11 +274,6 @@ def get_xbox_key_state(joystick, keymap):
             state[action] = (not right_stick_pressed) and (not rb_pressed) and (axes[BTN_Y] < -0.5) if len(axes) > 3 else False
         elif control == 'right_stick_right':
             state[action] = (not right_stick_pressed) and (not rb_pressed) and (axes[BTN_Y] > 0.5) if len(axes) > 3 else False
-        # Left stick pressed controls
-        elif control == 'left_stick_pressed_right':
-            state[action] = left_stick_pressed and (not lb_pressed) and (axes[BTN_B] > 0.5) if len(axes) > 0 else False
-        elif control == 'left_stick_pressed_left':
-            state[action] = left_stick_pressed and (not lb_pressed) and (axes[BTN_B] < -0.5) if len(axes) > 0 else False
         # Right stick pressed controls - Fixed axis mapping
         elif control == 'right_stick_pressed_right':
             state[action] = right_stick_pressed and (not rb_pressed) and (axes[BTN_Y] > 0.5) if len(axes) > 3 else False
@@ -477,9 +384,8 @@ def get_base_speed_control(joystick):
 def main():
     FPS = 30
     robot_name = "xlerobot_teleop_xbox"
-    port1: str = "/dev/tty.usbmodem5AB01576701"  # port to connect to the bus (so101 + head camera)
-    port2: str = "/dev/tty.usbmodem5AB01575731"  # port to connect to the bus (same as lekiwi setup)
-    robot_config = XLerobotConfig(id=robot_name, port1=port1, port2=port2)
+    port: str = "/dev/tty.usbmodem5AB01576701"  # port to connect to the bus (so101 + head camera)
+    robot_config = XLerobotConfig(id=robot_name, port2=port)
     robot = XLerobot(robot_config)
     try:
         robot.connect()
@@ -504,20 +410,15 @@ def main():
 
     # Init the arm and head instances
     obs = robot.get_observation()
-    kin_left = SO101Kinematics()
     kin_right = SO101Kinematics()
-    left_arm = SimpleTeleopArm(kin_left, LEFT_JOINT_MAP, obs, prefix="left")
     right_arm = SimpleTeleopArm(kin_right, RIGHT_JOINT_MAP, obs, prefix="right")
-    head_control = SimpleHeadControl(obs)
 
     # Move both arms and head to zero position at start
-    left_arm.move_to_zero_position(robot)
     right_arm.move_to_zero_position(robot)
 
     try:
         while True:
             pygame.event.pump()
-            left_key_state = get_xbox_key_state(joystick, LEFT_KEYMAP)
             right_key_state = get_xbox_key_state(joystick, RIGHT_KEYMAP)
             
             # Check for global reset (back button)
@@ -527,19 +428,13 @@ def main():
             # Handle global reset for all components
             if global_reset:
                 print("[MAIN] Global reset triggered!")
-                left_arm.move_to_zero_position(robot)
                 right_arm.move_to_zero_position(robot)
-                head_control.move_to_zero_position(robot)
                 continue
 
             # Handle both arms separately and simultaneously
-            left_arm.handle_keys(left_key_state)
             right_arm.handle_keys(right_key_state)
-            head_control.handle_keys(left_key_state)  # Head controlled by left arm keymap
 
-            left_action = left_arm.p_control_action(robot)
             right_action = right_arm.p_control_action(robot)
-            head_action = head_control.p_control_action(robot)
 
             # Get base action and speed control from controller
             base_action = get_base_action(joystick, robot)
@@ -552,7 +447,7 @@ def main():
                         base_action[key] *= speed_multiplier
 
             # Merge all actions
-            action = {**left_action, **right_action, **head_action, **base_action}
+            action = {**right_action, **base_action}
             robot.send_action(action)
 
             obs = robot.get_observation()
