@@ -72,20 +72,12 @@ class XLerobotClient(Robot):
     def _state_ft(self) -> dict[str, type]:
         return dict.fromkeys(
             (
-                "left_arm_shoulder_pan.pos",
-                "left_arm_shoulder_lift.pos",
-                "left_arm_elbow_flex.pos",
-                "left_arm_wrist_flex.pos",
-                "left_arm_wrist_roll.pos",
-                "left_arm_gripper.pos",
                 "right_arm_shoulder_pan.pos",
                 "right_arm_shoulder_lift.pos",
                 "right_arm_elbow_flex.pos",
                 "right_arm_wrist_flex.pos",
                 "right_arm_wrist_roll.pos",
                 "right_arm_gripper.pos",
-                "head_motor_1.pos",
-                "head_motor_2.pos",
                 "x.vel",
                 "y.vel",
                 "theta.vel",

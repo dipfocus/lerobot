@@ -20,19 +20,6 @@ from lerobot.model.SO101Robot import SO101Kinematics
 from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardTeleop, KeyboardTeleopConfig
 
 # Keymaps (semantic action: key)
-LEFT_KEYMAP = {
-    'shoulder_pan+': 'q', 'shoulder_pan-': 'e',
-    'wrist_roll+': 'r', 'wrist_roll-': 'f',
-    'gripper+': 't', 'gripper-': 'g',
-    'x+': 'w', 'x-': 's', 'y+': 'a', 'y-': 'd',
-    'pitch+': 'z', 'pitch-': 'x',
-    'reset': 'c',
-    # For head motors
-    "head_motor_1+": "<", "head_motor_1-": ">",
-    "head_motor_2+": ",", "head_motor_2-": ".",
-    
-    'triangle': 'y',  # Rectangle trajectory key
-}
 RIGHT_KEYMAP = {
     'shoulder_pan+': '7', 'shoulder_pan-': '9',
     'wrist_roll+': '/', 'wrist_roll-': '*',
@@ -44,14 +31,6 @@ RIGHT_KEYMAP = {
     'triangle': 'Y',  # Rectangle trajectory key
 }
 
-LEFT_JOINT_MAP = {
-    "shoulder_pan": "left_arm_shoulder_pan",
-    "shoulder_lift": "left_arm_shoulder_lift",
-    "elbow_flex": "left_arm_elbow_flex",
-    "wrist_flex": "left_arm_wrist_flex",
-    "wrist_roll": "left_arm_wrist_roll",
-    "gripper": "left_arm_gripper",
-}
 RIGHT_JOINT_MAP = {
     "shoulder_pan": "right_arm_shoulder_pan",
     "shoulder_lift": "right_arm_shoulder_lift",
@@ -61,11 +40,6 @@ RIGHT_JOINT_MAP = {
     "gripper": "right_arm_gripper",
 }
 
-# Head motor mapping
-HEAD_MOTOR_MAP = {
-    "head_motor_1": "head_motor_1",
-    "head_motor_2": "head_motor_2",
-}
 
 class RectangularTrajectory:
     """
@@ -129,46 +103,6 @@ class RectangularTrajectory:
         target_y = start_corner[1] + smooth_t * (end_corner[1] - start_corner[1])
         
         return target_x, target_y
-
-class SimpleHeadControl:
-    def __init__(self, initial_obs, kp=0.81):
-        self.kp = kp
-        self.degree_step = 1
-        # Initialize head motor positions
-        self.target_positions = {
-            "head_motor_1": initial_obs.get("head_motor_1.pos", 0.0),
-            "head_motor_2": initial_obs.get("head_motor_2.pos", 0.0),
-        }
-        self.zero_pos = {"head_motor_1": 0.0, "head_motor_2": 0.0}
-
-    def move_to_zero_position(self, robot):
-        self.target_positions = self.zero_pos.copy()
-        action = self.p_control_action(robot)
-        robot.send_action(action)
-
-    def handle_keys(self, key_state):
-        if key_state.get('head_motor_1+'):
-            self.target_positions["head_motor_1"] += self.degree_step
-            print(f"[HEAD] head_motor_1: {self.target_positions['head_motor_1']}")
-        if key_state.get('head_motor_1-'):
-            self.target_positions["head_motor_1"] -= self.degree_step
-            print(f"[HEAD] head_motor_1: {self.target_positions['head_motor_1']}")
-        if key_state.get('head_motor_2+'):
-            self.target_positions["head_motor_2"] += self.degree_step
-            print(f"[HEAD] head_motor_2: {self.target_positions['head_motor_2']}")
-        if key_state.get('head_motor_2-'):
-            self.target_positions["head_motor_2"] -= self.degree_step
-            print(f"[HEAD] head_motor_2: {self.target_positions['head_motor_2']}")
-
-    def p_control_action(self, robot):
-        obs = robot.get_observation()
-        action = {}
-        for motor in self.target_positions:
-            current = obs.get(f"{HEAD_MOTOR_MAP[motor]}.pos", 0.0)
-            error = self.target_positions[motor] - current
-            control = self.kp * error
-            action[f"{HEAD_MOTOR_MAP[motor]}.pos"] = current + control
-        return action
 
 class SimpleTeleopArm:
     def __init__(self, kinematics, joint_map, initial_obs, prefix="left", kp=0.81):
@@ -392,9 +326,8 @@ def main():
     # robot = XLerobotClient(robot_config)    
 
     # For local/wired connection
-    port1: str = "/dev/tty.usbmodem5AB01576701"  # port to connect to the bus (so101 + head camera)
-    port2: str = "/dev/tty.usbmodem5AB01575731"  # port to connect to the bus (same as lekiwi setup)
-    robot_config = XLerobotConfig(id=robot_name, port1=port1, port2=port2)
+    port: str = "/dev/tty.usbmodem5AB01576701"  # port to connect to the bus (so101 + head camera)
+    robot_config = XLerobotConfig(id=robot_name, port2=port)
     robot = XLerobot(robot_config)
     
     try:
@@ -415,27 +348,16 @@ def main():
 
     # Init the arm and head instances
     obs = robot.get_observation()
-    kin_left = SO101Kinematics()
     kin_right = SO101Kinematics()
-    left_arm = SimpleTeleopArm(kin_left, LEFT_JOINT_MAP, obs, prefix="left")
     right_arm = SimpleTeleopArm(kin_right, RIGHT_JOINT_MAP, obs, prefix="right")
-    head_control = SimpleHeadControl(obs)
 
     # Move both arms and head to zero position at start
-    left_arm.move_to_zero_position(robot)
     right_arm.move_to_zero_position(robot)
 
     try:
         while True:
             pressed_keys = set(keyboard.get_action().keys())
-            left_key_state = {action: (key in pressed_keys) for action, key in LEFT_KEYMAP.items()}
             right_key_state = {action: (key in pressed_keys) for action, key in RIGHT_KEYMAP.items()}
-
-            # Handle rectangular trajectory for left arm (y key)
-            if left_key_state.get('triangle'):
-                print("[MAIN] Left arm rectangular trajectory triggered!")
-                left_arm.execute_rectangular_trajectory(robot, fps=FPS)
-                continue
 
             # Handle rectangular trajectory for right arm (Y key)  
             if right_key_state.get('triangle'):
@@ -443,34 +365,22 @@ def main():
                 right_arm.execute_rectangular_trajectory(robot, fps=FPS)
                 continue
 
-            # Handle reset for left arm
-            if left_key_state.get('reset'):
-                left_arm.move_to_zero_position(robot)
-                continue  
 
             # Handle reset for right arm
             if right_key_state.get('reset'):
                 right_arm.move_to_zero_position(robot)
                 continue
 
-            # Handle reset for head motors with '?'
-            if '?' in pressed_keys:
-                head_control.move_to_zero_position(robot)
-                continue
 
-            left_arm.handle_keys(left_key_state)
             right_arm.handle_keys(right_key_state)
-            head_control.handle_keys(left_key_state)  # Head controlled by left arm keymap
 
-            left_action = left_arm.p_control_action(robot)
             right_action = right_arm.p_control_action(robot)
-            head_action = head_control.p_control_action(robot)
 
             # Base action
             keyboard_keys = np.array(list(pressed_keys))
             base_action = robot._from_keyboard_to_base_action(keyboard_keys) or {}
 
-            action = {**left_action, **right_action, **head_action, **base_action}
+            action = {**right_action, **base_action}
             robot.send_action(action)
 
             obs = robot.get_observation()
