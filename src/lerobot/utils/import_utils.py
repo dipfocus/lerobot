@@ -76,6 +76,7 @@ _reachy2_sdk_available = is_package_available("reachy2_sdk")
 _can_available = is_package_available("python-can", "can")
 _unitree_sdk_available = is_package_available("unitree-sdk2py", "unitree_sdk2py")
 _pygame_available = is_package_available("pygame")
+_pyagxarm_available = is_package_available("pyAgxArm")
 
 
 def make_device_from_device_class(config: ChoiceRegistry) -> Any:
