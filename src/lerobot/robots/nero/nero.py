@@ -60,6 +60,8 @@ class Nero(Robot):
     def observation_features(self) -> dict[str, type | tuple]:
         return {
             **self.motor_features,
+            "joints.timestamp": float,
+            **{f"{cam}.timestamp": float for cam in self.cameras},
             **self.camera_features,
         }
 
@@ -225,7 +227,9 @@ class Nero(Robot):
             raise RuntimeError("NERO is not connected")
 
         joint_positions = self._read_joint_positions()
+        joint_timestamp = time.perf_counter()
         obs: RobotObservation = {f"{joint}.pos": value for joint, value in zip(NERO_JOINTS, joint_positions, strict=True)}
+        obs["joints.timestamp"] = joint_timestamp
 
         if self.config.effector == "agx_gripper":
             try:
@@ -235,6 +239,10 @@ class Nero(Robot):
 
         for cam_key, cam in self.cameras.items():
             obs[cam_key] = cam.read_latest()
+            cam_timestamp = getattr(cam, "latest_timestamp", None)
+            obs[f"{cam_key}.timestamp"] = (
+                float(cam_timestamp) if cam_timestamp is not None else time.perf_counter()
+            )
 
         return obs
 
