@@ -308,6 +308,15 @@ while True:
 - 可选 `disable_arm_on_disconnect`
 - follower 还会断开所有相机
 
+### 5. 可选的时间戳偏差监控
+
+`NeroConfig` 还支持一组可选配置，用来监控 `joints.timestamp` 和每路 `<camera_name>.timestamp` 的偏差：
+
+- `observation_timestamp_skew_error_s`: 偏差超过多少秒后打印 `error` 日志；默认 `None`，表示关闭
+- `observation_timestamp_skew_error_interval_s`: 同一路相机在持续异常时，`error` 日志的最小打印间隔；默认 `5.0`
+
+这只是运行时诊断，不会中断 `get_observation()`，也不会改变 observation 内容。
+
 ## 为什么说这条链路是“关节空间镜像”而不是“位姿遥操作”
 
 很多遥操作系统会做下面这些事情：

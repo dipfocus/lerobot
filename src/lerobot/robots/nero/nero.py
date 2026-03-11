@@ -55,6 +55,8 @@ class Nero(Robot):
         self._is_connected = False
         self._last_joint_positions: list[float] | None = None
         self._last_gripper_width: float = 0.0
+        self._timestamp_skew_error_active: set[str] = set()
+        self._last_timestamp_skew_error_time: dict[str, float] = {}
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -137,6 +139,8 @@ class Nero(Robot):
 
         if self.is_connected:
             return
+
+        self._reset_timestamp_skew_error_state()
 
         try:
             self._require_sdk()
@@ -222,6 +226,43 @@ class Nero(Robot):
         self._last_gripper_width = float(gripper_msg.msg.width)
         return self._last_gripper_width
 
+    def _reset_timestamp_skew_error_state(self) -> None:
+        self._timestamp_skew_error_active.clear()
+        self._last_timestamp_skew_error_time.clear()
+
+    def _maybe_log_timestamp_skew_error(
+        self, cam_key: str, joint_timestamp: float, cam_timestamp: float
+    ) -> None:
+        threshold_s = self.config.observation_timestamp_skew_error_s
+        if threshold_s is None:
+            return
+
+        skew_s = abs(joint_timestamp - cam_timestamp)
+        if skew_s <= threshold_s:
+            self._timestamp_skew_error_active.discard(cam_key)
+            return
+
+        last_log_time = self._last_timestamp_skew_error_time.get(cam_key)
+        is_new_error = cam_key not in self._timestamp_skew_error_active
+        if (
+            is_new_error
+            or last_log_time is None
+            or joint_timestamp - last_log_time >= self.config.observation_timestamp_skew_error_interval_s
+        ):
+            logger.error(
+                "NERO observation timestamp skew exceeded threshold for camera '%s': "
+                "joints.timestamp=%.6f, %s.timestamp=%.6f, skew=%.6fs, threshold=%.6fs",
+                cam_key,
+                joint_timestamp,
+                cam_key,
+                cam_timestamp,
+                skew_s,
+                threshold_s,
+            )
+            self._last_timestamp_skew_error_time[cam_key] = joint_timestamp
+
+        self._timestamp_skew_error_active.add(cam_key)
+
     def get_observation(self) -> RobotObservation:
         if not self.is_connected:
             raise RuntimeError("NERO is not connected")
@@ -240,9 +281,8 @@ class Nero(Robot):
         for cam_key, cam in self.cameras.items():
             obs[cam_key] = cam.read_latest()
             cam_timestamp = getattr(cam, "latest_timestamp", None)
-            obs[f"{cam_key}.timestamp"] = (
-                float(cam_timestamp) if cam_timestamp is not None else time.perf_counter()
-            )
+            obs[f"{cam_key}.timestamp"] = float(cam_timestamp) if cam_timestamp is not None else time.perf_counter()
+            self._maybe_log_timestamp_skew_error(cam_key, joint_timestamp, obs[f"{cam_key}.timestamp"])
 
         return obs
 
@@ -292,6 +332,8 @@ class Nero(Robot):
         return sent_action
 
     def disconnect(self) -> None:
+        self._reset_timestamp_skew_error_state()
+
         if self.end_effector is not None and self.config.disable_gripper_on_disconnect:
             try:
                 self.end_effector.disable_gripper()

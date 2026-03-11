@@ -46,6 +46,10 @@ class NeroConfig(RobotConfig):
     disable_gripper_on_disconnect: bool = False
     disable_arm_on_disconnect: bool = False
 
+    # Optional timestamp skew monitoring between joint observations and camera frames.
+    observation_timestamp_skew_error_s: float | None = None
+    observation_timestamp_skew_error_interval_s: float = 5.0
+
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -59,3 +63,13 @@ class NeroConfig(RobotConfig):
             raise ValueError(f"timeout must be > 0, got {self.timeout}")
         if not 0.0 <= self.gripper_force <= 3.0:
             raise ValueError(f"gripper_force must be in [0.0, 3.0], got {self.gripper_force}")
+        if self.observation_timestamp_skew_error_s is not None and self.observation_timestamp_skew_error_s <= 0:
+            raise ValueError(
+                "observation_timestamp_skew_error_s must be > 0 when provided, "
+                f"got {self.observation_timestamp_skew_error_s}"
+            )
+        if self.observation_timestamp_skew_error_interval_s <= 0:
+            raise ValueError(
+                "observation_timestamp_skew_error_interval_s must be > 0, "
+                f"got {self.observation_timestamp_skew_error_interval_s}"
+            )
