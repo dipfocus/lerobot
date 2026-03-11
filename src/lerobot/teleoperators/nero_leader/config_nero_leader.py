@@ -35,7 +35,6 @@ class NeroLeaderConfig(TeleoperatorConfig):
 
     effector: Literal["none", "agx_gripper"] = "none"
     disable_gripper_on_disconnect: bool = False
-    disable_arm_on_disconnect: bool = False
 
     def __post_init__(self) -> None:
         if not self.channel:

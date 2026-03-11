@@ -44,7 +44,6 @@ class NeroConfig(RobotConfig):
     effector: Literal["none", "agx_gripper"] = "none"
     gripper_force: float = 1.0
     disable_gripper_on_disconnect: bool = False
-    disable_arm_on_disconnect: bool = False
 
     # Optional timestamp skew monitoring between joint observations and camera frames.
     observation_timestamp_skew_error_s: float | None = None

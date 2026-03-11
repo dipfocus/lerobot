@@ -224,20 +224,6 @@ class NeroLeader(Teleoperator):
             except Exception:
                 logger.exception("Failed to disable NERO leader gripper during disconnect")
 
-        if self.arm is not None and self.config.disable_arm_on_disconnect:
-            deadline = time.monotonic() + self.config.timeout
-            while True:
-                try:
-                    if self.arm.disable():
-                        break
-                except Exception:
-                    logger.exception("Failed to disable NERO leader arm during disconnect")
-                    break
-                if time.monotonic() >= deadline:
-                    logger.warning("Timed out disabling NERO leader arm during disconnect")
-                    break
-                time.sleep(0.05)
-
         self.arm = None
         self.end_effector = None
         self._is_connected = False

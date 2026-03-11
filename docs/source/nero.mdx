@@ -293,7 +293,6 @@ while True:
 - 等待 `arm.enable()`
 - 等待首帧关节反馈
 - 等待首帧夹爪反馈
-- 断连时等待 `arm.disable()`
 
 ### 4. 断开连接
 
@@ -305,7 +304,6 @@ while True:
 断开时的行为包括：
 
 - 可选 `disable_gripper_on_disconnect`
-- 可选 `disable_arm_on_disconnect`
 - follower 还会断开所有相机
 
 ### 5. 可选的时间戳偏差监控

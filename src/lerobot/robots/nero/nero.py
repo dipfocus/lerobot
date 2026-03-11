@@ -340,20 +340,6 @@ class Nero(Robot):
             except Exception:
                 logger.exception("Failed to disable NERO gripper during disconnect")
 
-        if self.arm is not None and self.config.disable_arm_on_disconnect:
-            deadline = time.monotonic() + self.config.timeout
-            while True:
-                try:
-                    if self.arm.disable():
-                        break
-                except Exception:
-                    logger.exception("Failed to disable NERO arm during disconnect")
-                    break
-                if time.monotonic() >= deadline:
-                    logger.warning("Timed out disabling NERO arm during disconnect")
-                    break
-                time.sleep(0.05)
-
         for cam in self.cameras.values():
             cam.disconnect()
 
