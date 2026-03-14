@@ -64,6 +64,7 @@ class Nero(Robot):
             **self.motor_features,
             "joints.timestamp": float,
             **{f"{cam}.timestamp": float for cam in self.cameras},
+            **{f"{cam}_depth.timestamp": float for cam, device in self.cameras.items() if self._camera_supports_depth(device)},
             **self.camera_features,
         }
 
@@ -80,7 +81,11 @@ class Nero(Robot):
 
     @property
     def camera_features(self) -> dict[str, tuple[int | None, int | None, int]]:
-        return {cam: (self.cameras[cam].height, self.cameras[cam].width, 3) for cam in self.cameras}
+        features = {cam: (self.cameras[cam].height, self.cameras[cam].width, 3) for cam in self.cameras}
+        for cam_key, cam in self.cameras.items():
+            if self._camera_supports_depth(cam):
+                features[f"{cam_key}_depth"] = (cam.height, cam.width, 1)
+        return features
 
     @property
     def is_connected(self) -> bool:
@@ -230,6 +235,10 @@ class Nero(Robot):
         self._timestamp_skew_error_active.clear()
         self._last_timestamp_skew_error_time.clear()
 
+    @staticmethod
+    def _camera_supports_depth(cam: Any) -> bool:
+        return bool(getattr(cam, "use_depth", False) and hasattr(cam, "read_depth_latest"))
+
     def _maybe_log_timestamp_skew_error(
         self, cam_key: str, joint_timestamp: float, cam_timestamp: float
     ) -> None:
@@ -283,6 +292,12 @@ class Nero(Robot):
             cam_timestamp = getattr(cam, "latest_timestamp", None)
             obs[f"{cam_key}.timestamp"] = float(cam_timestamp) if cam_timestamp is not None else time.perf_counter()
             self._maybe_log_timestamp_skew_error(cam_key, joint_timestamp, obs[f"{cam_key}.timestamp"])
+            if self._camera_supports_depth(cam):
+                depth_frame = cam.read_depth_latest()
+                if depth_frame.ndim == 2:
+                    depth_frame = depth_frame[:, :, None]
+                obs[f"{cam_key}_depth"] = depth_frame
+                obs[f"{cam_key}_depth.timestamp"] = obs[f"{cam_key}.timestamp"]
 
         return obs
 

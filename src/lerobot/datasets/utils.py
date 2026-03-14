@@ -397,12 +397,18 @@ def load_image_as_numpy(
     Returns:
         np.ndarray: The image as a numpy array.
     """
-    img = PILImage.open(fpath).convert("RGB")
-    img_array = np.array(img, dtype=dtype)
-    if channel_first:  # (H, W, C) -> (C, H, W)
+    img = PILImage.open(fpath)
+    raw_array = np.array(img)
+    img_array = raw_array.astype(dtype, copy=False)
+    if raw_array.ndim == 2:
+        if channel_first:
+            img_array = img_array[None, :, :]
+        else:
+            img_array = img_array[:, :, None]
+    elif channel_first:  # (H, W, C) -> (C, H, W)
         img_array = np.transpose(img_array, (2, 0, 1))
-    if np.issubdtype(dtype, np.floating):
-        img_array /= 255.0
+    if np.issubdtype(dtype, np.floating) and np.issubdtype(raw_array.dtype, np.integer):
+        img_array /= np.iinfo(raw_array.dtype).max
     return img_array
 
 
@@ -655,7 +661,7 @@ def hw_to_dataset_features(
 
     for key, shape in cam_fts.items():
         features[f"{prefix}.images.{key}"] = {
-            "dtype": "video" if use_video else "image",
+            "dtype": "video" if use_video and not (len(shape) == 3 and shape[-1] == 1) else "image",
             "shape": shape,
             "names": ["height", "width", "channels"],
         }

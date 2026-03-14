@@ -319,6 +319,65 @@ class RealSenseCamera(Camera):
                 self.width, self.height = actual_width, actual_height
                 self.capture_width, self.capture_height = actual_width, actual_height
 
+    def _serialize_intrinsics(self, stream_profile: Any) -> dict[str, Any]:
+        intrinsics = stream_profile.get_intrinsics()
+        return {
+            "width": int(intrinsics.width),
+            "height": int(intrinsics.height),
+            "fx": float(intrinsics.fx),
+            "fy": float(intrinsics.fy),
+            "ppx": float(intrinsics.ppx),
+            "ppy": float(intrinsics.ppy),
+            "model": str(intrinsics.model),
+            "coeffs": [float(value) for value in intrinsics.coeffs],
+        }
+
+    @staticmethod
+    def _serialize_extrinsics(extrinsics: Any) -> dict[str, Any]:
+        return {
+            "rotation": [float(value) for value in extrinsics.rotation],
+            "translation": [float(value) for value in extrinsics.translation],
+        }
+
+    @check_if_not_connected
+    def get_capture_metadata(self) -> dict[str, Any]:
+        if self.rs_profile is None:
+            raise RuntimeError(f"{self}: rs_profile must be initialized before reading metadata.")
+
+        color_profile = self.rs_profile.get_stream(rs.stream.color).as_video_stream_profile()
+        device = self.rs_profile.get_device()
+        metadata: dict[str, Any] = {
+            "type": "intelrealsense",
+            "serial_number": self.serial_number,
+            "name": device.get_info(rs.camera_info.name),
+            "firmware_version": device.get_info(rs.camera_info.firmware_version),
+            "product_line": device.get_info(rs.camera_info.product_line),
+            "usb_type_descriptor": device.get_info(rs.camera_info.usb_type_descriptor),
+            "color_stream": {
+                "fps": int(color_profile.fps()),
+                "width": int(color_profile.width()),
+                "height": int(color_profile.height()),
+                "intrinsics": self._serialize_intrinsics(color_profile),
+            },
+            "use_depth": self.use_depth,
+        }
+
+        if self.use_depth:
+            depth_profile = self.rs_profile.get_stream(rs.stream.depth).as_video_stream_profile()
+            depth_sensor = device.first_depth_sensor()
+            metadata["depth_stream"] = {
+                "fps": int(depth_profile.fps()),
+                "width": int(depth_profile.width()),
+                "height": int(depth_profile.height()),
+                "intrinsics": self._serialize_intrinsics(depth_profile),
+                "depth_scale_m": float(depth_sensor.get_depth_scale()),
+                "extrinsics_to_color": self._serialize_extrinsics(
+                    depth_profile.get_extrinsics_to(color_profile)
+                ),
+            }
+
+        return metadata
+
     @check_if_not_connected
     def read_depth(self, timeout_ms: int = 200) -> NDArray[Any]:
         """
@@ -357,6 +416,29 @@ class RealSenseCamera(Camera):
 
         if depth_map is None:
             raise RuntimeError("No depth frame available. Ensure camera is streaming.")
+
+        return depth_map
+
+    @check_if_not_connected
+    def read_depth_latest(self, max_age_ms: int = 500) -> NDArray[Any]:
+        if not self.use_depth:
+            raise RuntimeError(f"Depth stream is not enabled for {self}.")
+
+        if self.thread is None or not self.thread.is_alive():
+            raise RuntimeError(f"{self} read thread is not running.")
+
+        with self.frame_lock:
+            depth_map = self.latest_depth_frame
+            timestamp = self.latest_timestamp
+
+        if depth_map is None or timestamp is None:
+            raise RuntimeError(f"{self} has not captured any depth frames yet.")
+
+        age_ms = (time.perf_counter() - timestamp) * 1e3
+        if age_ms > max_age_ms:
+            raise TimeoutError(
+                f"{self} latest depth frame is too old: {age_ms:.1f} ms (max allowed: {max_age_ms} ms)."
+            )
 
         return depth_map
 
