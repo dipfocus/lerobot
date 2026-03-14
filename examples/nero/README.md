@@ -22,6 +22,28 @@ lerobot-teleoperate \
   --display_data=true
 ```
 
+### Bimanual Teleoperate
+
+```bash
+lerobot-teleoperate \
+  --robot.type=bi_nero_follower \
+  --robot.left_arm_config.channel=can0 \
+  --robot.right_arm_config.channel=can1 \
+  --robot.left_arm_config.effector=none \
+  --robot.right_arm_config.effector=none \
+  --robot.left_arm_config.speed_percent=10 \
+  --robot.right_arm_config.speed_percent=10 \
+  --robot.left_arm_config.max_relative_target=0.1 \
+  --robot.right_arm_config.max_relative_target=0.1 \
+  --teleop.type=bi_nero_leader \
+  --teleop.left_arm_config.channel=can2 \
+  --teleop.right_arm_config.channel=can3 \
+  --teleop.left_arm_config.effector=none \
+  --teleop.right_arm_config.effector=none \
+  --fps=30 \
+  --display_data=true
+```
+
 ### Record
 
 ```bash
@@ -59,6 +81,7 @@ Use the Python examples below when you want a file you can edit directly instead
 - Install the vendor `pyAgxArm` SDK first. `Nero` and `NeroLeader` will raise an import error without it.
 - Install the RealSense dependency and verify your D435i is visible. `lerobot-find-cameras realsense` will list available serial numbers.
 - Put the follower and leader on separate CAN channels, then update `FOLLOWER_CHANNEL` and `LEADER_CHANNEL`.
+- For bimanual teleoperation, the current config model assumes one NERO arm per configured CAN channel.
 - Keep `EFFECTOR` aligned between the two scripts. If both arms have the AGX gripper, set it to `"agx_gripper"`. Otherwise leave it at `"none"`.
 - For `record.py`, update `FRONT_REALSENSE_SERIAL_OR_NAME` and `WRIST_REALSENSE_SERIAL_OR_NAME`.
 - `record.py` writes `meta/camera_setup.json` next to the dataset so the camera layout, intrinsics, and depth-to-color extrinsics are preserved with the recording.
@@ -75,6 +98,7 @@ python examples/nero/record.py
 ## Notes
 
 - Start with the follower arm physically close to the leader arm. The example enables a conservative `max_relative_target` to reduce large jumps, but it is still a direct joint-space mapping.
+- In bimanual mode, left and right camera/action keys are automatically prefixed as `left_*` and `right_*`.
 - This example now records dual-view RGB-D observations, robot state, actions, and timestamps. RGB streams are stored as videos, while depth maps are stored as single-channel image features.
 - Camera intrinsics and depth-to-color extrinsics are recorded in `meta/camera_setup.json`.
 - Stock ACT / Diffusion / GR00T configs in LeRobot are still RGB-first. Using the depth channels in training will require custom feature selection and model input handling.
