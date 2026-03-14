@@ -69,12 +69,63 @@ lerobot-record \
   --display_data=true
 ```
 
+### Bimanual Record
+
+```bash
+lerobot-record \
+  --robot.type=bi_nero_follower \
+  --robot.left_arm_config.channel=can0 \
+  --robot.right_arm_config.channel=can1 \
+  --robot.left_arm_config.effector=none \
+  --robot.right_arm_config.effector=none \
+  --robot.left_arm_config.speed_percent=10 \
+  --robot.right_arm_config.speed_percent=10 \
+  --robot.left_arm_config.max_relative_target=0.1 \
+  --robot.right_arm_config.max_relative_target=0.1 \
+  --robot.left_arm_config.cameras='{
+    wrist: {type: intelrealsense, serial_number_or_name: "233522074606", width: 640, height: 480, fps: 30, use_depth: true}
+  }' \
+  --robot.right_arm_config.cameras='{
+    wrist: {type: intelrealsense, serial_number_or_name: "233522074607", width: 640, height: 480, fps: 30, use_depth: true}
+  }' \
+  --teleop.type=bi_nero_leader \
+  --teleop.left_arm_config.channel=can2 \
+  --teleop.right_arm_config.channel=can3 \
+  --teleop.left_arm_config.effector=none \
+  --teleop.right_arm_config.effector=none \
+  --dataset.repo_id=<hf_username>/<dataset_repo_id> \
+  --dataset.num_episodes=2 \
+  --dataset.episode_time_s=30 \
+  --dataset.reset_time_s=15 \
+  --dataset.single_task="Pick up the object together." \
+  --dataset.push_to_hub=false \
+  --display_data=true
+```
+
+### Bimanual Replay
+
+```bash
+lerobot-replay \
+  --robot.type=bi_nero_follower \
+  --robot.left_arm_config.channel=can0 \
+  --robot.right_arm_config.channel=can1 \
+  --robot.left_arm_config.effector=none \
+  --robot.right_arm_config.effector=none \
+  --robot.left_arm_config.speed_percent=10 \
+  --robot.right_arm_config.speed_percent=10 \
+  --robot.left_arm_config.max_relative_target=0.1 \
+  --robot.right_arm_config.max_relative_target=0.1 \
+  --dataset.repo_id=<hf_username>/<dataset_repo_id> \
+  --dataset.episode=0
+```
+
 Use the Python examples below when you want a file you can edit directly instead of a long command.
 
 ## Files
 
 - `teleoperate.py`: direct joint teleoperation from one NERO arm (`nero_leader`) to another (`nero`).
 - `record.py`: teleoperate while recording a training-oriented dataset with front + wrist Intel RealSense D435i RGB-D streams.
+- Bimanual NERO is currently documented through the CLI examples above; there is no dedicated Python example file yet.
 
 ## Before You Run
 
@@ -82,6 +133,7 @@ Use the Python examples below when you want a file you can edit directly instead
 - Install the RealSense dependency and verify your D435i is visible. `lerobot-find-cameras realsense` will list available serial numbers.
 - Put the follower and leader on separate CAN channels, then update `FOLLOWER_CHANNEL` and `LEADER_CHANNEL`.
 - For bimanual teleoperation, the current config model assumes one NERO arm per configured CAN channel.
+- For bimanual recording, each arm can reuse the same local camera key names such as `wrist`; the wrapper exposes them as `left_wrist`, `right_wrist`, `left_wrist_depth`, and `right_wrist_depth`.
 - Keep `EFFECTOR` aligned between the two scripts. If both arms have the AGX gripper, set it to `"agx_gripper"`. Otherwise leave it at `"none"`.
 - For `record.py`, update `FRONT_REALSENSE_SERIAL_OR_NAME` and `WRIST_REALSENSE_SERIAL_OR_NAME`.
 - `record.py` writes `meta/camera_setup.json` next to the dataset so the camera layout, intrinsics, and depth-to-color extrinsics are preserved with the recording.
@@ -99,6 +151,7 @@ python examples/nero/record.py
 
 - Start with the follower arm physically close to the leader arm. The example enables a conservative `max_relative_target` to reduce large jumps, but it is still a direct joint-space mapping.
 - In bimanual mode, left and right camera/action keys are automatically prefixed as `left_*` and `right_*`.
+- `lerobot-calibrate` also accepts `bi_nero_follower` and `bi_nero_leader`, but NERO calibration is still a no-op on the LeRobot side; use it mainly as a quick connect/disconnect check.
 - This example now records dual-view RGB-D observations, robot state, actions, and timestamps. RGB streams are stored as videos, while depth maps are stored as single-channel image features.
 - Camera intrinsics and depth-to-color extrinsics are recorded in `meta/camera_setup.json`.
 - Stock ACT / Diffusion / GR00T configs in LeRobot are still RGB-first. Using the depth channels in training will require custom feature selection and model input handling.

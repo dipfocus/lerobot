@@ -25,8 +25,10 @@
 | 遥操作入口 | `src/lerobot/scripts/lerobot_teleoperate.py` | 解析配置、创建设备、运行主循环 |
 | follower 基类 | `src/lerobot/robots/robot.py` | 约束 `connect / get_observation / send_action / disconnect` 接口 |
 | NERO follower | `src/lerobot/robots/nero/nero.py` | 连接 NERO SDK、读取观测、发送关节和夹爪命令 |
+| 双臂 NERO follower | `src/lerobot/robots/bi_nero_follower/bi_nero_follower.py` | 组合左右两个 `Nero`，统一暴露 `left_*` / `right_*` 字段 |
 | leader 基类 | `src/lerobot/teleoperators/teleoperator.py` | 约束 `connect / get_action / send_feedback / disconnect` 接口 |
 | NERO leader | `src/lerobot/teleoperators/nero_leader/nero_leader.py` | 读取 leader 机械臂关节状态，输出 teleop action |
+| 双臂 NERO leader | `src/lerobot/teleoperators/bi_nero_leader/bi_nero_leader.py` | 组合左右两个 `NeroLeader`，统一暴露 `left_*` / `right_*` 字段 |
 | 默认 processor | `src/lerobot/processor/factory.py` | 默认返回 identity pipeline |
 | robot 工厂 | `src/lerobot/robots/utils.py` | `--robot.type=nero` 时实例化 `Nero` |
 | teleop 工厂 | `src/lerobot/teleoperators/utils.py` | `--teleop.type=nero_leader` 时实例化 `NeroLeader` |
@@ -56,6 +58,189 @@ lerobot-teleoperate \
 - `channel/interface/bitrate/timeout/start_read_thread` 等参数会原样传给 `pyAgxArm`
 - 如果不需要夹爪，`effector` 保持默认 `none`
 
+## 双臂启动方式
+
+双臂模式不是一套新的控制算法，而是“两个单臂 NERO 对象的组合包装”。最小启动命令如下：
+
+```bash
+lerobot-teleoperate \
+  --robot.type=bi_nero_follower \
+  --robot.left_arm_config.channel=can0 \
+  --robot.right_arm_config.channel=can1 \
+  --robot.left_arm_config.effector=none \
+  --robot.right_arm_config.effector=none \
+  --robot.left_arm_config.max_relative_target=0.1 \
+  --robot.right_arm_config.max_relative_target=0.1 \
+  --teleop.type=bi_nero_leader \
+  --teleop.left_arm_config.channel=can2 \
+  --teleop.right_arm_config.channel=can3 \
+  --teleop.left_arm_config.effector=none \
+  --teleop.right_arm_config.effector=none \
+  --fps=30 \
+  --display_data=true
+```
+
+这里有三个实现层面的约束：
+
+1. `bi_nero_follower` 和 `bi_nero_leader` 的配置结构都是 `left_arm_config + right_arm_config`
+2. 当前抽象默认是一条机械臂对应一个 CAN channel
+3. 主循环 `teleop_loop(...)` 完全不用改，因为双臂包装后仍然输出扁平字典，只是字段名变成了 `left_joint1.pos`、`right_joint1.pos` 这类前缀形式
+
+## 双臂 NERO 是怎么按代码设计出来的
+
+这部分不是概念描述，而是直接对应当前代码里的四层设计。
+
+### 1. 配置层：先把双臂问题变成“两个单臂配置”
+
+双臂配置没有重新发明一套字段，而是直接复用单臂配置：
+
+- `BiNeroFollowerConfig.left_arm_config: NeroConfig`
+- `BiNeroFollowerConfig.right_arm_config: NeroConfig`
+- `BiNeroLeaderConfig.left_arm_config: NeroLeaderConfig`
+- `BiNeroLeaderConfig.right_arm_config: NeroLeaderConfig`
+
+这样设计有两个直接好处：
+
+1. 单臂已经支持的参数，例如 `effector`、`speed_percent`、`max_relative_target`、`cameras`、`timeout`，双臂天然全部继承
+2. CLI 参数结构天然清晰，例如 `--robot.left_arm_config.max_relative_target=0.1`
+
+配置类本身通过装饰器注册：
+
+- `@RobotConfig.register_subclass("bi_nero_follower")`
+- `@TeleoperatorConfig.register_subclass("bi_nero_leader")`
+
+所以 CLI 解析时不需要写额外的解析器逻辑。
+
+### 2. 工厂层：只在入口处多加一个 type 分支
+
+双臂 NERO 并没有改 `teleoperate` 主循环，而是只在工厂处多加两个分支：
+
+- `make_robot_from_config()` 遇到 `config.type == "bi_nero_follower"` 时返回 `BiNeroFollower`
+- `make_teleoperator_from_config()` 遇到 `config.type == "bi_nero_leader"` 时返回 `BiNeroLeader`
+
+这一步很关键，因为 LeRobot 的 CLI 入口最终都是：
+
+1. 解析成 `RobotConfig` / `TeleoperatorConfig`
+2. 交给工厂函数创建真实对象
+
+只要这里能构造出一个满足 `Robot` / `Teleoperator` 抽象接口的对象，后面的 `teleop_loop(...)`、`record_loop(...)`、`replay(...)` 都不需要知道它是单臂还是双臂。
+
+### 3. 设备层：双臂 wrapper 只做组合，不重写单臂控制
+
+`BiNeroFollower` 和 `BiNeroLeader` 都没有去继承单臂 `Nero` / `NeroLeader` 的控制语义，而是做了一个更简单的选择：内部持有两个单臂对象。
+
+`BiNeroFollower.__init__()` 的核心逻辑是：
+
+```python
+self.left_arm = Nero(left_arm_config)
+self.right_arm = Nero(right_arm_config)
+```
+
+`BiNeroLeader.__init__()` 则对应：
+
+```python
+self.left_arm = NeroLeader(left_arm_config)
+self.right_arm = NeroLeader(right_arm_config)
+```
+
+这里还做了一个很实用的处理：wrapper 不直接复用传入的子配置对象，而是重新构造一份新的单臂配置，并补上：
+
+- `id=f"{config.id}_left"` / `id=f"{config.id}_right"`
+- `calibration_dir=config.calibration_dir`
+
+这样左右臂在校准文件、日志标识和设备生命周期上都还是“两个独立单臂设备”，不会互相覆盖。
+
+这也是为什么双臂实现选择继承 `Robot` / `Teleoperator`，而不是继承 `Nero` / `NeroLeader`：
+
+- 单臂 `Nero` 的语义是“一台机械臂 + 一套动作空间”
+- 双臂 `BiNeroFollower` 的语义已经变成“两台机械臂 + 一套更大的动作空间”
+
+它们不是同一个抽象层次，组合比继承更干净。
+
+### 4. 接口层：用前缀把双臂重新压平成 LeRobot 标准接口
+
+LeRobot 主循环只认“扁平字典动作”和“扁平字典观测”，所以双臂 wrapper 的核心任务就是做前缀映射。
+
+代码里这个动作由 `_prefix_mapping()` 完成：
+
+```python
+return {f"{prefix}{key}": value for key, value in values.items()}
+```
+
+于是：
+
+- 左臂 `joint1.pos` 变成 `left_joint1.pos`
+- 右臂 `joint1.pos` 变成 `right_joint1.pos`
+- 左臂 `wrist` 相机变成 `left_wrist`
+- 右臂 `wrist.timestamp` 变成 `right_wrist.timestamp`
+
+在 follower 侧：
+
+- `observation_features` / `action_features` 都是通过左右单臂 feature dict 加前缀后 merge 出来
+- `get_observation()` 是“左右观测分别读取，再 merge”
+- `send_action()` 是“按前缀 split 成左右动作，再分别调用左右单臂 `send_action()`”
+
+在 leader 侧：
+
+- `action_features` 是左右单臂 action_features 加前缀后的 merge
+- `get_action()` 是“分别读取左右 leader 动作，再 merge”
+
+所以双臂 wrapper 做的不是新控制，而是“字段空间适配”。
+
+### 5. 错误处理层：连接失败时显式回滚
+
+双臂设备比单臂多一个典型风险：左臂连上了，右臂失败，设备进入半连接状态。
+
+当前代码里专门加了 `_cleanup_after_connect_error()` 处理这个问题：
+
+1. 先尝试连接左臂
+2. 再连接右臂
+3. 如果中途抛异常，回头检查已经连接上的那一侧并执行 `disconnect()`
+
+这意味着 `connect()` 的语义仍然是原子的：
+
+- 要么左右都连上
+- 要么失败后回到“都没连上”的状态
+
+`disconnect()` 也不是简单地只关第一台，而是按左右顺序逐个断开，并收集异常，尽量把资源收干净。
+
+## 双臂模式的动作与观测语义
+
+双臂实现的本质是组合而不是重写：
+
+- `BiNeroLeader.get_action()` 分别读取左 leader 和右 leader 的动作
+- `BiNeroFollower.send_action()` 再把 `left_*` / `right_*` 字段拆回左右两台 follower
+- 每一侧内部仍然复用单臂 `NeroLeader` / `Nero` 的逻辑，包括夹爪处理、`max_relative_target` 限幅和时间戳逻辑
+
+因此双臂模式下字段语义只是“在单臂字段前面再套一层左右前缀”：
+
+| 双臂字段 | 实际含义 |
+| --- | --- |
+| `left_joint1.pos` | 左 follower 第 1 关节目标位置 |
+| `right_joint1.pos` | 右 follower 第 1 关节目标位置 |
+| `left_gripper.pos` | 左夹爪开口宽度 |
+| `right_gripper.pos` | 右夹爪开口宽度 |
+| `left_front` | 左臂挂载的 `front` 相机图像 |
+| `right_wrist.timestamp` | 右臂 `wrist` 相机时间戳 |
+
+所以双臂模式依然是“关节空间直通”，只是从一条链路变成两条并行链路。
+
+## 双臂模式如何接入主循环
+
+`lerobot-teleoperate`、`lerobot-record`、`lerobot-replay` 本身都只要求：
+
+- teleop 产出一个扁平 action 字典
+- robot 接受同结构的扁平 action 字典
+
+双臂 NERO 正是通过这个约束无缝接入：
+
+1. `BiNeroLeader` 把左右 leader 动作 merge 成一个带前缀的字典
+2. 默认 processor 仍然是 identity
+3. `BiNeroFollower` 再按前缀 split 成左右两个单臂 action
+4. 左右单臂 follower 各自调用原来的 `send_action()`
+
+这也是为什么本次支持双臂 NERO 时，不需要改 `teleop_loop(...)` 的控制结构。
+
 ## 启动阶段
 
 ### 1. 解析配置并创建对象
@@ -70,6 +255,8 @@ lerobot-teleoperate \
 
 - `NeroLeaderConfig` 通过 `@TeleoperatorConfig.register_subclass("nero_leader")` 注册
 - `NeroConfig` 通过 `@RobotConfig.register_subclass("nero")` 注册
+- `BiNeroLeaderConfig` 通过 `@TeleoperatorConfig.register_subclass("bi_nero_leader")` 注册
+- `BiNeroFollowerConfig` 通过 `@RobotConfig.register_subclass("bi_nero_follower")` 注册
 
 因此 CLI 里的 `type` 字段能直接映射到对应类。
 
@@ -338,6 +525,24 @@ while True:
 2. 保持 leader/follower 不变，在 processor 中加入 FK/IK、坐标变换和安全限制
 
 第二种方式更符合 LeRobot 当前 processor 架构。
+
+## 双臂数据采集与回放
+
+在 `lerobot-record` 和 `lerobot-replay` 里，双臂 NERO 的使用方式和单臂一致，只是 `type` 改成：
+
+- `--robot.type=bi_nero_follower`
+- `--teleop.type=bi_nero_leader`
+
+如果做双臂录制：
+
+- action 会保存成 `left_*` / `right_*` 两组字段
+- observation 里的关节、夹爪、时间戳和相机字段也都会带左右前缀
+- 左右两侧相机可以在各自 arm config 中复用相同的局部名字，比如都叫 `wrist`，最终导出后会自动区分成 `left_wrist` 和 `right_wrist`
+
+如果做双臂回放：
+
+- `lerobot-replay` 直接把 episode 中的带前缀 action 送回 `BiNeroFollower`
+- 双臂 wrapper 会自动拆成左右两个单臂动作，再分别下发给对应机械臂
 
 ## NERO 数据采集时序
 
