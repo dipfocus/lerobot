@@ -66,6 +66,11 @@ DEFAULT_STREAM_QUALITY = 80
 DEFAULT_STREAM_EVERY_N = 1
 DEFAULT_STREAM_RECONNECT_S = 2.0
 DEFAULT_STREAM_TIMEOUT_S = 0.2
+DEFAULT_STARTUP_BASE_LINEAR = 0.04
+DEFAULT_STARTUP_BASE_MOVE_S = 0.25
+DEFAULT_STARTUP_ARM_DELTA = 3.0
+DEFAULT_STARTUP_ARM_MOVE_S = 0.35
+STARTUP_ARM_TEST_JOINT = "arm_wrist_roll.pos"
 
 
 @dataclass
@@ -324,6 +329,73 @@ def stop_base(robot: Eggbot, arm_hold_action: dict[str, float] | None = None) ->
     robot.send_action(action)
 
 
+def choose_startup_arm_target(
+    robot: Eggbot, arm_hold_action: dict[str, float]
+) -> tuple[str, float] | None:
+    if not arm_hold_action:
+        return None
+
+    joint = STARTUP_ARM_TEST_JOINT
+    if joint not in arm_hold_action:
+        joint = next(
+            (key for key in arm_hold_action if key != "arm_gripper.pos"),
+            next(iter(arm_hold_action)),
+        )
+
+    current = float(arm_hold_action[joint])
+    if robot.config.use_degrees:
+        step = -DEFAULT_STARTUP_ARM_DELTA if current > 0.0 else DEFAULT_STARTUP_ARM_DELTA
+        return joint, current + step
+
+    lower, upper = (0.0, 100.0) if joint == "arm_gripper.pos" else (-100.0, 100.0)
+    step = DEFAULT_STARTUP_ARM_DELTA
+    if current > upper - DEFAULT_STARTUP_ARM_DELTA:
+        step = -DEFAULT_STARTUP_ARM_DELTA
+    target = clamp(current + step, lower, upper)
+    if target == current and current > lower + DEFAULT_STARTUP_ARM_DELTA:
+        target = current - DEFAULT_STARTUP_ARM_DELTA
+    return joint, target
+
+
+def run_startup_motion_check(robot: Eggbot, dry_run: bool = False) -> None:
+    obs = robot.get_observation()
+    arm_hold_action = get_arm_hold_action(obs)
+    base_stop_action = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
+
+    print("Running startup hardware check: base forward/back, arm wrist twitch.")
+    if dry_run:
+        arm_target = choose_startup_arm_target(robot, arm_hold_action)
+        print(
+            "[DRY RUN] Startup check would send "
+            f"base +/-{DEFAULT_STARTUP_BASE_LINEAR:.2f} m/s and arm target {arm_target}."
+        )
+        return
+
+    try:
+        robot.send_action({**arm_hold_action, **base_stop_action})
+        time.sleep(0.1)
+
+        for x_vel in (DEFAULT_STARTUP_BASE_LINEAR, -DEFAULT_STARTUP_BASE_LINEAR):
+            robot.send_action({**arm_hold_action, "x.vel": x_vel, "y.vel": 0.0, "theta.vel": 0.0})
+            time.sleep(DEFAULT_STARTUP_BASE_MOVE_S)
+        stop_base(robot, arm_hold_action)
+        time.sleep(0.1)
+
+        arm_target = choose_startup_arm_target(robot, arm_hold_action)
+        if arm_target is None:
+            print("Startup hardware check skipped arm motion: no arm position in observation.")
+        else:
+            joint, target = arm_target
+            robot.send_action({**arm_hold_action, **base_stop_action, joint: target})
+            time.sleep(DEFAULT_STARTUP_ARM_MOVE_S)
+            robot.send_action({**arm_hold_action, **base_stop_action})
+            time.sleep(DEFAULT_STARTUP_ARM_MOVE_S)
+    finally:
+        stop_base(robot, arm_hold_action)
+
+    print("Startup hardware check complete.")
+
+
 def follow_loop(robot: Eggbot, model: Any, args: argparse.Namespace) -> None:
     targets = parse_targets(args.targets)
     control_period = 1.0 / DEFAULT_CONTROL_HZ
@@ -436,6 +508,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run detection and control math without sending robot commands.",
     )
+    parser.add_argument(
+        "--skip-startup-check",
+        action="store_true",
+        help="Skip the short base and arm motion check after connecting.",
+    )
     args = parser.parse_args()
     args.stream_quality = int(clamp(args.stream_quality, 1, 100))
     args.stream_every_n = max(1, args.stream_every_n)
@@ -448,10 +525,11 @@ def main() -> None:
 
     robot = build_robot(args)
 
-    model = YOLO(args.model)
-
     try:
         robot.connect()
+        if not args.skip_startup_check:
+            run_startup_motion_check(robot, dry_run=args.dry_run)
+        model = YOLO(args.model)
         follow_loop(robot, model, args)
     except KeyboardInterrupt:
         print("Interrupted by user.")
