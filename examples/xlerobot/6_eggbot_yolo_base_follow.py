@@ -6,16 +6,23 @@ YOLO target approach for an Eggbot with:
 - one camera mounted on the base.
 
 Example:
+    On the viewing machine:
+        PYTHONPATH=src python examples/xlerobot/6_eggbot_yolo_stream_viewer.py --port 5001
+
+    On the Jetson:
     PYTHONPATH=src python examples/xlerobot/6_eggbot_yolo_base_follow.py \
         --port /dev/ttyACM1 \
         --camera 0 \
-        --targets bottle
+        --targets bottle \
+        --stream-host 192.168.1.10
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import socket
+import struct
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +61,11 @@ DEFAULT_LOST_TIMEOUT = 0.4
 DEFAULT_SEARCH_ANGULAR = 0.0
 DEFAULT_MAX_RELATIVE_TARGET: int | None = None
 DEFAULT_USE_DEGREES = False
+DEFAULT_STREAM_PORT = 5001
+DEFAULT_STREAM_QUALITY = 80
+DEFAULT_STREAM_EVERY_N = 1
+DEFAULT_STREAM_RECONNECT_S = 2.0
+DEFAULT_STREAM_TIMEOUT_S = 0.2
 
 
 @dataclass
@@ -64,6 +76,78 @@ class Detection:
     center_xy: tuple[int, int]
     area_ratio: float
     height_ratio: float
+
+
+class RemoteFrameStreamer:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        jpeg_quality: int,
+        reconnect_interval_s: float = DEFAULT_STREAM_RECONNECT_S,
+        timeout_s: float = DEFAULT_STREAM_TIMEOUT_S,
+    ):
+        self.host = host
+        self.port = port
+        self.jpeg_quality = jpeg_quality
+        self.reconnect_interval_s = reconnect_interval_s
+        self.timeout_s = timeout_s
+        self._socket: socket.socket | None = None
+        self._last_connect_attempt = 0.0
+        self._warned_disconnected = False
+
+    def _connect(self) -> bool:
+        if self._socket is not None:
+            return True
+
+        now = time.monotonic()
+        if now - self._last_connect_attempt < self.reconnect_interval_s:
+            return False
+        self._last_connect_attempt = now
+
+        try:
+            sock = socket.create_connection((self.host, self.port), timeout=self.timeout_s)
+        except OSError as exc:
+            if not self._warned_disconnected:
+                print(f"Waiting for stream receiver at {self.host}:{self.port}: {exc}")
+                self._warned_disconnected = True
+            return False
+
+        sock.settimeout(self.timeout_s)
+        self._socket = sock
+        self._warned_disconnected = False
+        print(f"Streaming annotated video to {self.host}:{self.port}")
+        return True
+
+    def send(self, frame: np.ndarray) -> None:
+        if not self._connect():
+            return
+
+        ok, encoded = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+        )
+        if not ok:
+            logger.warning("Failed to encode stream frame as JPEG.")
+            return
+
+        payload = encoded.tobytes()
+        packet = struct.pack("!I", len(payload)) + payload
+
+        try:
+            assert self._socket is not None
+            self._socket.sendall(packet)
+        except OSError as exc:
+            print(f"Stream receiver disconnected: {exc}")
+            self.close()
+
+    def close(self) -> None:
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            finally:
+                self._socket = None
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -244,6 +328,12 @@ def follow_loop(robot: Eggbot, model: Any, args: argparse.Namespace) -> None:
     targets = parse_targets(args.targets)
     control_period = 1.0 / DEFAULT_CONTROL_HZ
     last_seen_at = 0.0
+    frame_index = 0
+    streamer = (
+        RemoteFrameStreamer(args.stream_host, args.stream_port, args.stream_quality)
+        if args.stream_host
+        else None
+    )
 
     obs = robot.get_observation()
     arm_hold_action = get_arm_hold_action(obs)
@@ -251,51 +341,55 @@ def follow_loop(robot: Eggbot, model: Any, args: argparse.Namespace) -> None:
         robot.send_action({**arm_hold_action, "x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0})
 
     print(f"Following targets: {sorted(targets) if targets else 'any detected class'}")
-    print("Press q or ESC in the video window, or Ctrl+C in the terminal, to stop.")
+    if streamer is None:
+        print("No stream receiver configured. Pass --stream-host <receiver-ip> to send annotated video.")
+    print("Press Ctrl+C in the terminal to stop.")
 
-    while True:
-        loop_start = time.perf_counter()
-        obs = robot.get_observation()
-        frame = obs.get(DEFAULT_CAMERA_NAME)
-        if frame is None:
-            raise RuntimeError(f"Camera frame '{DEFAULT_CAMERA_NAME}' was not found in robot observation.")
+    try:
+        while True:
+            loop_start = time.perf_counter()
+            obs = robot.get_observation()
+            frame = obs.get(DEFAULT_CAMERA_NAME)
+            if frame is None:
+                raise RuntimeError(f"Camera frame '{DEFAULT_CAMERA_NAME}' was not found in robot observation.")
 
-        frame = np.ascontiguousarray(frame)
-        results = model.predict(frame, imgsz=DEFAULT_IMGSZ, conf=DEFAULT_CONF, verbose=False)
-        result = results[0]
-        detection = select_target_detection(result, targets, frame.shape)
+            frame = np.ascontiguousarray(frame)
+            results = model.predict(frame, imgsz=DEFAULT_IMGSZ, conf=DEFAULT_CONF, verbose=False)
+            result = results[0]
+            detection = select_target_detection(result, targets, frame.shape)
 
-        if detection is None:
-            seen_recently = time.monotonic() - last_seen_at < DEFAULT_LOST_TIMEOUT
-            if seen_recently:
-                base_action = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
-                state = "lost"
+            if detection is None:
+                seen_recently = time.monotonic() - last_seen_at < DEFAULT_LOST_TIMEOUT
+                if seen_recently:
+                    base_action = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
+                    state = "lost"
+                else:
+                    base_action = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": DEFAULT_SEARCH_ANGULAR}
+                    state = "searching" if DEFAULT_SEARCH_ANGULAR else "stopped"
+                dx_norm = None
             else:
-                base_action = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": DEFAULT_SEARCH_ANGULAR}
-                state = "searching" if DEFAULT_SEARCH_ANGULAR else "stopped"
-            dx_norm = None
-        else:
-            last_seen_at = time.monotonic()
-            base_action, state, dx_norm = compute_base_action(detection, frame.shape)
+                last_seen_at = time.monotonic()
+                base_action, state, dx_norm = compute_base_action(detection, frame.shape)
 
-        action = dict(base_action)
-        if arm_hold_action:
-            action.update(arm_hold_action)
-        if args.dry_run:
-            print(f"[DRY RUN] {state}: {base_action}")
-        else:
-            robot.send_action(action)
+            action = dict(base_action)
+            if arm_hold_action:
+                action.update(arm_hold_action)
+            if args.dry_run:
+                print(f"[DRY RUN] {state}: {base_action}")
+            else:
+                robot.send_action(action)
 
-        if args.display:
-            annotated = draw_status(frame, detection, state, base_action, dx_norm)
-            cv2.imshow("Eggbot YOLO Base Follow", annotated)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
-                break
+            if streamer is not None and frame_index % args.stream_every_n == 0:
+                annotated = draw_status(frame, detection, state, base_action, dx_norm)
+                streamer.send(annotated)
+            frame_index += 1
 
-        elapsed = time.perf_counter() - loop_start
-        if elapsed < control_period:
-            time.sleep(control_period - elapsed)
+            elapsed = time.perf_counter() - loop_start
+            if elapsed < control_period:
+                time.sleep(control_period - elapsed)
+    finally:
+        if streamer is not None:
+            streamer.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -314,14 +408,38 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model", default=default_model_path())
     parser.add_argument("--targets", default=DEFAULT_TARGETS, help="Comma-separated class names, or 'any'.")
-    parser.add_argument("--no-display", dest="display", action="store_false")
+    parser.add_argument(
+        "--stream-host",
+        default=None,
+        help="IP address or hostname of the machine running 6_eggbot_yolo_stream_viewer.py.",
+    )
+    parser.add_argument(
+        "--stream-port",
+        type=int,
+        default=DEFAULT_STREAM_PORT,
+        help="TCP port used by the stream receiver.",
+    )
+    parser.add_argument(
+        "--stream-quality",
+        type=int,
+        default=DEFAULT_STREAM_QUALITY,
+        help="JPEG quality for the annotated video stream, from 1 to 100.",
+    )
+    parser.add_argument(
+        "--stream-every-n",
+        type=int,
+        default=DEFAULT_STREAM_EVERY_N,
+        help="Send one annotated frame every N control frames.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run detection and control math without sending robot commands.",
     )
-    parser.set_defaults(display=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.stream_quality = int(clamp(args.stream_quality, 1, 100))
+    args.stream_every_n = max(1, args.stream_every_n)
+    return args
 
 
 def main() -> None:
@@ -345,7 +463,6 @@ def main() -> None:
         finally:
             if robot.is_connected:
                 robot.disconnect()
-            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
