@@ -40,6 +40,10 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
         from .lekiwi import LeKiwi
 
         return LeKiwi(config)
+    elif config.type == "eggbot":
+        from .eggbot import Eggbot
+
+        return Eggbot(config)
     elif config.type == "hope_jr_hand":
         from .hope_jr import HopeJrHand
 
