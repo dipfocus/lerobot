@@ -7,31 +7,33 @@ YOLO target approach for an Eggbot with:
 
 Example:
     On the viewing machine:
-        PYTHONPATH=src python examples/xlerobot/6_eggbot_yolo_stream_viewer.py --port 5001
+        python examples/xlerobot/6_eggbot_yolo_stream_viewer.py --port 5001
 
     On the Jetson:
-    PYTHONPATH=src python examples/xlerobot/6_eggbot_yolo_base_follow.py \
+    python examples/xlerobot/6_eggbot_yolo_base_follow.py \
         --port /dev/ttyACM1 \
         --camera 0 \
         --targets bottle \
-        --stream-host 192.168.1.10
+        --stream-host 192.168.3.252
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import queue
 import socket
 import struct
+import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from ultralytics import YOLO
 
 import cv2
 import numpy as np
-
+from ultralytics import YOLO
 
 from lerobot.cameras.configs import ColorMode
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
@@ -49,6 +51,7 @@ DEFAULT_FPS = 30
 DEFAULT_TARGETS = "bottle"
 DEFAULT_CONF = 0.35
 DEFAULT_IMGSZ = 640
+DEFAULT_DEVICE = "cuda:0"
 DEFAULT_CONTROL_HZ = 15.0
 DEFAULT_CENTER_DEADBAND = 0.08
 DEFAULT_FORWARD_ALIGNMENT = 0.35
@@ -61,9 +64,11 @@ DEFAULT_LOST_TIMEOUT = 0.4
 DEFAULT_SEARCH_ANGULAR = 0.0
 DEFAULT_MAX_RELATIVE_TARGET: int | None = None
 DEFAULT_USE_DEGREES = False
+DEFAULT_STREAM_HOST = "192.168.3.252"
 DEFAULT_STREAM_PORT = 5001
 DEFAULT_STREAM_QUALITY = 80
 DEFAULT_STREAM_EVERY_N = 1
+DEFAULT_STREAM_SCALE = 1.0
 DEFAULT_STREAM_RECONNECT_S = 2.0
 DEFAULT_STREAM_TIMEOUT_S = 0.2
 DEFAULT_STARTUP_BASE_LINEAR = 0.04
@@ -89,17 +94,23 @@ class RemoteFrameStreamer:
         host: str,
         port: int,
         jpeg_quality: int,
+        scale: float = DEFAULT_STREAM_SCALE,
         reconnect_interval_s: float = DEFAULT_STREAM_RECONNECT_S,
         timeout_s: float = DEFAULT_STREAM_TIMEOUT_S,
     ):
         self.host = host
         self.port = port
         self.jpeg_quality = jpeg_quality
+        self.scale = scale
         self.reconnect_interval_s = reconnect_interval_s
         self.timeout_s = timeout_s
         self._socket: socket.socket | None = None
         self._last_connect_attempt = 0.0
         self._warned_disconnected = False
+        self._frames: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="eggbot-yolo-streamer", daemon=True)
+        self._thread.start()
 
     def _connect(self) -> bool:
         if self._socket is not None:
@@ -118,6 +129,8 @@ class RemoteFrameStreamer:
                 self._warned_disconnected = True
             return False
 
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024)
         sock.settimeout(self.timeout_s)
         self._socket = sock
         self._warned_disconnected = False
@@ -125,8 +138,43 @@ class RemoteFrameStreamer:
         return True
 
     def send(self, frame: np.ndarray) -> None:
+        if self._stop_event.is_set():
+            return
+
+        if self._frames.full():
+            with suppress(queue.Empty):
+                self._frames.get_nowait()
+
+        with suppress(queue.Full):
+            self._frames.put_nowait(frame)
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                frame = self._frames.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            while True:
+                try:
+                    frame = self._frames.get_nowait()
+                except queue.Empty:
+                    break
+
+            self._send_frame(frame)
+
+    def _send_frame(self, frame: np.ndarray) -> None:
         if not self._connect():
             return
+
+        if self.scale != 1.0:
+            frame = cv2.resize(
+                frame,
+                None,
+                fx=self.scale,
+                fy=self.scale,
+                interpolation=cv2.INTER_AREA,
+            )
 
         ok, encoded = cv2.imencode(
             ".jpg",
@@ -145,14 +193,20 @@ class RemoteFrameStreamer:
             self._socket.sendall(packet)
         except OSError as exc:
             print(f"Stream receiver disconnected: {exc}")
-            self.close()
+            self._close_socket()
 
-    def close(self) -> None:
+    def _close_socket(self) -> None:
         if self._socket is not None:
             try:
                 self._socket.close()
             finally:
                 self._socket = None
+
+    def close(self) -> None:
+        self._stop_event.set()
+        self._close_socket()
+        if threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -426,7 +480,13 @@ def follow_loop(robot: Eggbot, model: Any, args: argparse.Namespace) -> None:
                 raise RuntimeError(f"Camera frame '{DEFAULT_CAMERA_NAME}' was not found in robot observation.")
 
             frame = np.ascontiguousarray(frame)
-            results = model.predict(frame, imgsz=DEFAULT_IMGSZ, conf=DEFAULT_CONF, verbose=False)
+            results = model.predict(
+                frame,
+                imgsz=DEFAULT_IMGSZ,
+                conf=DEFAULT_CONF,
+                device=DEFAULT_DEVICE,
+                verbose=False,
+            )
             result = results[0]
             detection = select_target_detection(result, targets, frame.shape)
 
@@ -482,7 +542,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--targets", default=DEFAULT_TARGETS, help="Comma-separated class names, or 'any'.")
     parser.add_argument(
         "--stream-host",
-        default=None,
+        default=DEFAULT_STREAM_HOST,
         help="IP address or hostname of the machine running 6_eggbot_yolo_stream_viewer.py.",
     )
     parser.add_argument(
@@ -530,6 +590,7 @@ def main() -> None:
         if not args.skip_startup_check:
             run_startup_motion_check(robot, dry_run=args.dry_run)
         model = YOLO(args.model)
+        model.to(DEFAULT_DEVICE)
         follow_loop(robot, model, args)
     except KeyboardInterrupt:
         print("Interrupted by user.")
