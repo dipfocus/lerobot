@@ -56,8 +56,8 @@ DEFAULT_CONTROL_HZ = 15.0
 DEFAULT_CENTER_DEADBAND = 0.08
 DEFAULT_FORWARD_ALIGNMENT = 0.35
 DEFAULT_STOP_HEIGHT_RATIO = 0.45
-DEFAULT_MIN_LINEAR = 0.03
-DEFAULT_MAX_LINEAR = 0.12
+DEFAULT_MIN_LINEAR = 0.04
+DEFAULT_MAX_LINEAR = 0.16
 DEFAULT_APPROACH_X_SIGN = -1.0
 DEFAULT_TURN_KP = 60.0
 DEFAULT_MAX_ANGULAR = 45.0
@@ -258,12 +258,10 @@ def get_arm_hold_action(obs: dict[str, Any]) -> dict[str, float]:
     }
 
 
-def select_target_detection(
-    result: Any, targets: set[str] | None, frame_shape: tuple[int, int, int]
-) -> Detection | None:
+def extract_detections(result: Any, frame_shape: tuple[int, int, int]) -> list[Detection]:
     boxes = getattr(result, "boxes", None)
     if boxes is None or len(boxes) == 0:
-        return None
+        return []
 
     frame_h, frame_w = frame_shape[:2]
     frame_area = float(frame_h * frame_w)
@@ -272,8 +270,6 @@ def select_target_detection(
     for box in boxes:
         cls_id = int(box.cls[0])
         label = str(result.names[cls_id])
-        if targets is not None and label.lower() not in targets:
-            continue
 
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         x1 = max(0, min(frame_w - 1, x1))
@@ -297,10 +293,19 @@ def select_target_detection(
             )
         )
 
-    if not detections:
+    return detections
+
+
+def select_target_detection(detections: list[Detection], targets: set[str] | None) -> Detection | None:
+    target_detections = [
+        detection
+        for detection in detections
+        if targets is None or detection.label.lower() in targets
+    ]
+    if not target_detections:
         return None
 
-    return max(detections, key=lambda det: (det.confidence, det.area_ratio))
+    return max(target_detections, key=lambda det: (det.confidence, det.area_ratio))
 
 
 def compute_base_action(
@@ -338,26 +343,61 @@ def compute_base_action(
     return {"x.vel": x_vel, "y.vel": 0.0, "theta.vel": theta_vel}, state, dx_norm
 
 
+def draw_detection_box(
+    frame: np.ndarray,
+    detection: Detection,
+    color: tuple[int, int, int],
+    thickness: int,
+    show_height: bool = False,
+) -> None:
+    x1, y1, x2, y2 = detection.box_xyxy
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+    cv2.circle(frame, detection.center_xy, 4, color, -1)
+
+    label = f"{detection.label} {detection.confidence:.2f}"
+    if show_height:
+        label += f" h={detection.height_ratio:.2f}"
+    cv2.putText(
+        frame,
+        label,
+        (x1, max(20, y1 - 8)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        color,
+        thickness,
+        cv2.LINE_AA,
+    )
+
+
 def draw_status(
     frame: np.ndarray,
+    detections: list[Detection],
     detection: Detection | None,
+    targets: set[str] | None,
     state: str,
     action: dict[str, float],
     dx_norm: float | None,
 ) -> np.ndarray:
     annotated = frame.copy()
 
+    for candidate in detections:
+        if candidate == detection:
+            continue
+        is_target_class = targets is None or candidate.label.lower() in targets
+        color = (0, 180, 255) if is_target_class else (160, 160, 160)
+        draw_detection_box(annotated, candidate, color, 1)
+
     if detection is not None:
-        x1, y1, x2, y2 = detection.box_xyxy
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.circle(annotated, detection.center_xy, 4, (0, 255, 0), -1)
+        draw_detection_box(annotated, detection, (0, 255, 0), 2, show_height=True)
+    else:
+        target_text = "any class" if targets is None else ", ".join(sorted(targets))
         cv2.putText(
             annotated,
-            f"{detection.label} {detection.confidence:.2f} h={detection.height_ratio:.2f}",
-            (x1, max(20, y1 - 8)),
+            f"Target not detected: {target_text}",
+            (12, 58),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
+            0.65,
+            (0, 0, 255),
             2,
             cv2.LINE_AA,
         )
@@ -490,7 +530,8 @@ def follow_loop(robot: Eggbot, model: Any, args: argparse.Namespace) -> None:
                 verbose=False,
             )
             result = results[0]
-            detection = select_target_detection(result, targets, frame.shape)
+            detections = extract_detections(result, frame.shape)
+            detection = select_target_detection(detections, targets)
 
             if detection is None:
                 seen_recently = time.monotonic() - last_seen_at < DEFAULT_LOST_TIMEOUT
@@ -499,7 +540,7 @@ def follow_loop(robot: Eggbot, model: Any, args: argparse.Namespace) -> None:
                     state = "lost"
                 else:
                     base_action = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": DEFAULT_SEARCH_ANGULAR}
-                    state = "searching" if DEFAULT_SEARCH_ANGULAR else "stopped"
+                    state = "searching" if DEFAULT_SEARCH_ANGULAR else "target_missing"
                 dx_norm = None
             else:
                 last_seen_at = time.monotonic()
@@ -514,7 +555,7 @@ def follow_loop(robot: Eggbot, model: Any, args: argparse.Namespace) -> None:
                 robot.send_action(action)
 
             if streamer is not None and frame_index % args.stream_every_n == 0:
-                annotated = draw_status(frame, detection, state, base_action, dx_norm)
+                annotated = draw_status(frame, detections, detection, targets, state, base_action, dx_norm)
                 streamer.send(annotated)
             frame_index += 1
 
