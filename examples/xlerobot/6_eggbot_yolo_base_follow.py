@@ -58,6 +58,7 @@ DEFAULT_FORWARD_ALIGNMENT = 0.35
 DEFAULT_STOP_HEIGHT_RATIO = 0.45
 DEFAULT_MIN_LINEAR = 0.03
 DEFAULT_MAX_LINEAR = 0.12
+DEFAULT_APPROACH_X_SIGN = -1.0
 DEFAULT_TURN_KP = 60.0
 DEFAULT_MAX_ANGULAR = 45.0
 DEFAULT_LOST_TIMEOUT = 0.4
@@ -328,9 +329,10 @@ def compute_base_action(
     else:
         distance_scale = clamp(distance_error / DEFAULT_STOP_HEIGHT_RATIO, 0.0, 1.0)
         alignment_scale = clamp(1.0 - abs(dx_norm) / DEFAULT_FORWARD_ALIGNMENT, 0.0, 1.0)
-        x_vel = DEFAULT_MAX_LINEAR * distance_scale * alignment_scale
-        if x_vel > 0.0:
-            x_vel = max(DEFAULT_MIN_LINEAR, x_vel)
+        linear_speed = DEFAULT_MAX_LINEAR * distance_scale * alignment_scale
+        if linear_speed > 0.0:
+            linear_speed = max(DEFAULT_MIN_LINEAR, linear_speed)
+        x_vel = DEFAULT_APPROACH_X_SIGN * linear_speed
         state = "approaching"
 
     return {"x.vel": x_vel, "y.vel": 0.0, "theta.vel": theta_vel}, state, dx_norm
